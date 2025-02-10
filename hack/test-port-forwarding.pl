@@ -5,9 +5,9 @@
 # rules (before the instance is started). And once when the instance is
 # running to perform the tests:
 #
-# ./hack/test-port-forwarding.pl examples/default.yaml
-# limactl start --tty=false examples/default.yaml
-# git restore examples/default.yaml
+# ./hack/test-port-forwarding.pl templates/default.yaml
+# limactl --tty=false start templates/default.yaml
+# git restore templates/default.yaml
 # ./hack/test-port-forwarding.pl default
 #
 # TODO: support for ipv6 host addresses
@@ -27,7 +27,7 @@ my $addr = scalar gethostbyname(hostname());
 my $ipv4 = length $addr ? inet_ntoa($addr) : "127.0.0.1";
 my $ipv6 = ""; # todo
 
-# macOS Github runners seem to use "localhost" as the hostname
+# macOS GitHub runners seem to use "localhost" as the hostname
 if ($ipv4 eq "127.0.0.1" && $Config{osname} eq "darwin") {
     $ipv4 = qx(system_profiler SPNetworkDataType -json | jq -r 'first(.SPNetworkDataType[] | select(.ip_address) | .ip_address) | first');
     chomp $ipv4;
@@ -52,6 +52,17 @@ if (-f $instance) {
         print $fh $_;
     }
     exit;
+}
+
+# Check if netcat is available before running tests
+my $nc_path = `command -v nc 2>/dev/null`;
+chomp $nc_path;
+unless ($nc_path) {
+    die "Error: 'nc' (netcat) is not installed on the host system.\n" .
+        "Please install netcat to run this test script:\n" .
+        "  - On macOS: brew install netcat\n" .
+        "  - On Ubuntu/Debian: sudo apt-get install netcat\n" .
+        "  - On RHEL/CentOS: sudo yum install nmap-ncat\n";
 }
 
 # Otherwise $instance must be the name of an already running instance that has been
@@ -126,7 +137,7 @@ my $ha_log_size = -s $ha_log or die;
 foreach my $id (0..@test-1) {
     my $test = $test[$id];
     my $nc = "nc -l $test->{guest_ip} $test->{guest_port}";
-    if ($instance eq "alpine") {
+    if ($instance =~ /^alpine/) {
         $nc = "nc -l -s $test->{guest_ip} -p $test->{guest_port}";
     }
 
