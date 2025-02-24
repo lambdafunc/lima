@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/lima-vm/lima/pkg/editutil/editorcmd"
 	"github.com/lima-vm/lima/pkg/store/dirnames"
 	"github.com/lima-vm/lima/pkg/store/filenames"
-	"github.com/norouter/norouter/cmd/norouter/editorcmd"
 	"github.com/sirupsen/logrus"
 )
 
@@ -24,7 +24,7 @@ func fileWarning(filename string) string {
 	s += "# -----------\n"
 	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
 		s += "#"
-		if len(line) > 0 {
+		if line != "" {
 			s += " " + line
 		}
 		s += "\n"
@@ -52,7 +52,7 @@ func GenerateEditorWarningHeader() string {
 // OpenEditor opens an editor, and returns the content (not path) of the modified yaml.
 //
 // OpenEditor returns nil when the file was saved as an empty file, optionally with whitespaces.
-func OpenEditor(name string, content []byte, hdr string) ([]byte, error) {
+func OpenEditor(content []byte, hdr string) ([]byte, error) {
 	editor := editorcmd.Detect()
 	if editor == "" {
 		return nil, errors.New("could not detect a text editor binary, try setting $EDITOR")
@@ -63,9 +63,11 @@ func OpenEditor(name string, content []byte, hdr string) ([]byte, error) {
 	}
 	tmpYAMLPath := tmpYAMLFile.Name()
 	defer os.RemoveAll(tmpYAMLPath)
-	if err := os.WriteFile(tmpYAMLPath,
-		append([]byte(hdr), content...),
-		0o600); err != nil {
+	if _, err := tmpYAMLFile.Write(append([]byte(hdr), content...)); err != nil {
+		tmpYAMLFile.Close()
+		return nil, err
+	}
+	if err := tmpYAMLFile.Close(); err != nil {
 		return nil, err
 	}
 
