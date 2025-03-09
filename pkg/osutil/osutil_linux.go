@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package osutil
 
 import (
@@ -8,10 +11,10 @@ import (
 // UnixPathMax is the value of UNIX_PATH_MAX.
 const UnixPathMax = 108
 
-// Stat is a selection of syscall.Stat_t
+// Stat is a selection of syscall.Stat_t.
 type Stat struct {
-	Uid uint32 //nolint:revive
-	Gid uint32 //nolint:revive
+	Uid uint32
+	Gid uint32
 }
 
 func SysStat(fi fs.FileInfo) (Stat, bool) {

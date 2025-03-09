@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package store
 
 import (
@@ -9,7 +12,38 @@ import (
 	"github.com/containerd/containerd/identifiers"
 	"github.com/lima-vm/lima/pkg/limayaml"
 	"github.com/lima-vm/lima/pkg/store/dirnames"
+	"github.com/lima-vm/lima/pkg/store/filenames"
 )
+
+// Directory returns the LimaDir.
+func Directory() string {
+	limaDir, err := dirnames.LimaDir()
+	if err != nil {
+		return ""
+	}
+	return limaDir
+}
+
+// Validate checks the LimaDir.
+func Validate() error {
+	limaDir, err := dirnames.LimaDir()
+	if err != nil {
+		return err
+	}
+	names, err := Instances()
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		// Each instance directory needs to have limayaml
+		instDir := filepath.Join(limaDir, name)
+		yamlPath := filepath.Join(instDir, filenames.LimaYAML)
+		if _, err := os.Stat(yamlPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // Instances returns the names of the instances under LimaDir.
 func Instances() ([]string, error) {
@@ -57,7 +91,7 @@ func Disks() ([]string, error) {
 }
 
 // InstanceDir returns the instance dir.
-// InstanceDir does not check whether the instance exists
+// InstanceDir does not check whether the instance exists.
 func InstanceDir(name string) (string, error) {
 	if err := identifiers.Validate(name); err != nil {
 		return "", err
@@ -97,7 +131,7 @@ func LoadYAMLByFilePath(filePath string) (*limayaml.LimaYAML, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := limayaml.Validate(*y, false); err != nil {
+	if err := limayaml.Validate(y, false); err != nil {
 		return nil, err
 	}
 	return y, nil

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package sshutil
 
 import (
@@ -11,16 +14,50 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coreos/go-semver/semver"
+	"github.com/lima-vm/lima/pkg/ioutilx"
 	"github.com/lima-vm/lima/pkg/lockutil"
 	"github.com/lima-vm/lima/pkg/osutil"
 	"github.com/lima-vm/lima/pkg/store/dirnames"
 	"github.com/lima-vm/lima/pkg/store/filenames"
+	"github.com/mattn/go-shellwords"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/cpu"
 )
+
+// Environment variable that allows configuring the command (alias) to execute
+// in place of the 'ssh' executable.
+const EnvShellSSH = "SSH"
+
+func SSHArguments() (arg0 string, arg0Args []string, err error) {
+	if sshShell := os.Getenv(EnvShellSSH); sshShell != "" {
+		sshShellFields, err := shellwords.Parse(sshShell)
+		switch {
+		case err != nil:
+			logrus.WithError(err).Warnf("Failed to split %s variable into shell tokens. "+
+				"Falling back to 'ssh' command", EnvShellSSH)
+		case len(sshShellFields) > 0:
+			arg0 = sshShellFields[0]
+			if len(sshShellFields) > 1 {
+				arg0Args = sshShellFields[1:]
+			}
+		}
+	}
+
+	if arg0 == "" {
+		arg0, err = exec.LookPath("ssh")
+		if err != nil {
+			return "", []string{""}, err
+		}
+	}
+
+	return arg0, arg0Args, nil
+}
 
 type PubKey struct {
 	Filename string
@@ -56,12 +93,20 @@ func DefaultPubKeys(loadDotSSH bool) ([]PubKey, error) {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-		if err := os.MkdirAll(configDir, 0700); err != nil {
+		if err := os.MkdirAll(configDir, 0o700); err != nil {
 			return nil, fmt.Errorf("could not create %q directory: %w", configDir, err)
 		}
 		if err := lockutil.WithDirLock(configDir, func() error {
-			keygenCmd := exec.Command("ssh-keygen", "-t", "ed25519", "-q", "-N", "", "-f",
-				filepath.Join(configDir, filenames.UserPrivateKey))
+			// no passphrase, no user@host comment
+			privPath := filepath.Join(configDir, filenames.UserPrivateKey)
+			if runtime.GOOS == "windows" {
+				privPath, err = ioutilx.WindowsSubsystemPath(privPath)
+				if err != nil {
+					return err
+				}
+			}
+			keygenCmd := exec.Command("ssh-keygen", "-t", "ed25519", "-q", "-N", "",
+				"-C", "lima", "-f", privPath)
 			logrus.Debugf("executing %v", keygenCmd.Args)
 			if out, err := keygenCmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("failed to run %v: %q: %w", keygenCmd.Args, string(out), err)
@@ -122,7 +167,7 @@ var sshInfo struct {
 //
 // The result always contains the IdentityFile option.
 // The result never contains the Port option.
-func CommonOpts(useDotSSH bool) ([]string, error) {
+func CommonOpts(sshPath string, useDotSSH bool) ([]string, error) {
 	configDir, err := dirnames.LimaConfigDir()
 	if err != nil {
 		return nil, err
@@ -132,7 +177,12 @@ func CommonOpts(useDotSSH bool) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	opts := []string{"IdentityFile=\"" + privateKeyPath + "\""}
+	var opts []string
+	idf, err := identityFileEntry(privateKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	opts = []string{idf}
 
 	// Append all private keys corresponding to ~/.ssh/*.pub to keep old instances working
 	// that had been created before lima started using an internal identity.
@@ -163,7 +213,11 @@ func CommonOpts(useDotSSH bool) ([]string, error) {
 				// Fail on permission-related and other path errors
 				return nil, err
 			}
-			opts = append(opts, "IdentityFile=\""+privateKeyPath+"\"")
+			idf, err = identityFileEntry(privateKeyPath)
+			if err != nil {
+				return nil, err
+			}
+			opts = append(opts, idf)
 		}
 	}
 
@@ -180,7 +234,7 @@ func CommonOpts(useDotSSH bool) ([]string, error) {
 
 	sshInfo.Do(func() {
 		sshInfo.aesAccelerated = detectAESAcceleration()
-		sshInfo.openSSHVersion = DetectOpenSSHVersion()
+		sshInfo.openSSHVersion = DetectOpenSSHVersion(sshPath)
 	})
 
 	// Only OpenSSH version 8.1 and later support adding ciphers to the front of the default set
@@ -191,34 +245,57 @@ func CommonOpts(useDotSSH bool) ([]string, error) {
 		// We prioritize AES algorithms when AES accelerator is available.
 		if sshInfo.aesAccelerated {
 			logrus.Debugf("AES accelerator seems available, prioritizing aes128-gcm@openssh.com and aes256-gcm@openssh.com")
-			opts = append(opts, "Ciphers=\"^aes128-gcm@openssh.com,aes256-gcm@openssh.com\"")
+			if runtime.GOOS == "windows" {
+				opts = append(opts, "Ciphers=^aes128-gcm@openssh.com,aes256-gcm@openssh.com")
+			} else {
+				opts = append(opts, "Ciphers=\"^aes128-gcm@openssh.com,aes256-gcm@openssh.com\"")
+			}
 		} else {
 			logrus.Debugf("AES accelerator does not seem available, prioritizing chacha20-poly1305@openssh.com")
-			opts = append(opts, "Ciphers=\"^chacha20-poly1305@openssh.com\"")
+			if runtime.GOOS == "windows" {
+				opts = append(opts, "Ciphers=^chacha20-poly1305@openssh.com")
+			} else {
+				opts = append(opts, "Ciphers=\"^chacha20-poly1305@openssh.com\"")
+			}
 		}
 	}
 	return opts, nil
 }
 
-// SSHOpts adds the following options to CommonOptions: User, ControlMaster, ControlPath, ControlPersist
-func SSHOpts(instDir string, useDotSSH, forwardAgent bool, forwardX11 bool, forwardX11Trusted bool) ([]string, error) {
+func identityFileEntry(privateKeyPath string) (string, error) {
+	if runtime.GOOS == "windows" {
+		privateKeyPath, err := ioutilx.WindowsSubsystemPath(privateKeyPath)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf(`IdentityFile='%s'`, privateKeyPath), nil
+	}
+	return fmt.Sprintf(`IdentityFile="%s"`, privateKeyPath), nil
+}
+
+// SSHOpts adds the following options to CommonOptions: User, ControlMaster, ControlPath, ControlPersist.
+func SSHOpts(sshPath, instDir, username string, useDotSSH, forwardAgent, forwardX11, forwardX11Trusted bool) ([]string, error) {
 	controlSock := filepath.Join(instDir, filenames.SSHSock)
 	if len(controlSock) >= osutil.UnixPathMax {
 		return nil, fmt.Errorf("socket path %q is too long: >= UNIX_PATH_MAX=%d", controlSock, osutil.UnixPathMax)
 	}
-	u, err := osutil.LimaUser(false)
+	opts, err := CommonOpts(sshPath, useDotSSH)
 	if err != nil {
 		return nil, err
 	}
-	opts, err := CommonOpts(useDotSSH)
-	if err != nil {
-		return nil, err
+	controlPath := fmt.Sprintf(`ControlPath="%s"`, controlSock)
+	if runtime.GOOS == "windows" {
+		controlSock, err = ioutilx.WindowsSubsystemPath(controlSock)
+		if err != nil {
+			return nil, err
+		}
+		controlPath = fmt.Sprintf(`ControlPath='%s'`, controlSock)
 	}
 	opts = append(opts,
-		fmt.Sprintf("User=%s", u.Username), // guest and host have the same username, but we should specify the username explicitly (#85)
+		fmt.Sprintf("User=%s", username), // guest and host have the same username, but we should specify the username explicitly (#85)
 		"ControlMaster=auto",
-		fmt.Sprintf("ControlPath=\"%s\"", controlSock),
-		"ControlPersist=5m",
+		controlPath,
+		"ControlPersist=yes",
 	)
 	if forwardAgent {
 		opts = append(opts, "ForwardAgent=yes")
@@ -254,18 +331,48 @@ func ParseOpenSSHVersion(version []byte) *semver.Version {
 	return &semver.Version{}
 }
 
-func DetectOpenSSHVersion() semver.Version {
+// sshExecutable beyond path also records size and mtime, in the case of ssh upgrades.
+type sshExecutable struct {
+	Path    string
+	Size    int64
+	ModTime time.Time
+}
+
+var (
+	// sshVersions caches the parsed version of each ssh executable, if it is needed again.
+	sshVersions   = map[sshExecutable]*semver.Version{}
+	sshVersionsRW sync.RWMutex
+)
+
+func DetectOpenSSHVersion(ssh string) semver.Version {
 	var (
 		v      semver.Version
+		exe    sshExecutable
 		stderr bytes.Buffer
 	)
-	cmd := exec.Command("ssh", "-V")
+	path, err := exec.LookPath(ssh)
+	if err != nil {
+		logrus.Warnf("failed to find ssh executable: %v", err)
+	} else {
+		st, _ := os.Stat(path)
+		exe = sshExecutable{Path: path, Size: st.Size(), ModTime: st.ModTime()}
+		sshVersionsRW.RLock()
+		ver := sshVersions[exe]
+		sshVersionsRW.RUnlock()
+		if ver != nil {
+			return *ver
+		}
+	}
+	cmd := exec.Command(path, "-V")
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		logrus.Warnf("failed to run %v: stderr=%q", cmd.Args, stderr.String())
 	} else {
 		v = *ParseOpenSSHVersion(stderr.Bytes())
 		logrus.Debugf("OpenSSH version %s detected", v)
+		sshVersionsRW.Lock()
+		sshVersions[exe] = &v
+		sshVersionsRW.Unlock()
 	}
 	return v
 }
@@ -278,19 +385,45 @@ func detectValidPublicKey(content string) bool {
 	if strings.ContainsRune(content, '\n') {
 		return false
 	}
-	var spaced = strings.SplitN(content, " ", 3)
+	spaced := strings.SplitN(content, " ", 3)
 	if len(spaced) < 2 {
 		return false
 	}
-	var algo, base64Key = spaced[0], spaced[1]
-	var decodedKey, err = base64.StdEncoding.DecodeString(base64Key)
+	algo, base64Key := spaced[0], spaced[1]
+	decodedKey, err := base64.StdEncoding.DecodeString(base64Key)
 	if err != nil || len(decodedKey) < 4 {
 		return false
 	}
-	var sigLength = binary.BigEndian.Uint32(decodedKey)
+	sigLength := binary.BigEndian.Uint32(decodedKey)
 	if uint32(len(decodedKey)) < sigLength {
 		return false
 	}
-	var sigFormat = string(decodedKey[4 : 4+sigLength])
+	sigFormat := string(decodedKey[4 : 4+sigLength])
 	return algo == sigFormat
+}
+
+func detectAESAcceleration() bool {
+	if !cpu.Initialized {
+		if runtime.GOOS == "linux" && runtime.GOARCH == "arm64" {
+			// cpu.Initialized seems to always be false, even when the cpu.ARM64 struct is filled out
+			// it is only being set by readARM64Registers, but not by readHWCAP or readLinuxProcCPUInfo
+			return cpu.ARM64.HasAES
+		}
+		if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+			// golang.org/x/sys/cpu supports darwin/amd64, linux/amd64, and linux/arm64,
+			// but apparently lacks support for darwin/arm64: https://github.com/golang/sys/blob/v0.5.0/cpu/cpu_arm64.go#L43-L60
+			//
+			// According to https://gist.github.com/voluntas/fd279c7b4e71f9950cfd4a5ab90b722b ,
+			// aes-128-gcm is faster than chacha20-poly1305 on Apple M1.
+			//
+			// So we return `true` here.
+			//
+			// This workaround will not be needed when https://go-review.googlesource.com/c/sys/+/332729 is merged.
+			logrus.Debug("Failed to detect CPU features. Assuming that AES acceleration is available on this Apple silicon.")
+			return true
+		}
+		logrus.Warn("Failed to detect CPU features. Assuming that AES acceleration is not available.")
+		return false
+	}
+	return cpu.ARM.HasAES || cpu.ARM64.HasAES || cpu.S390X.HasAES || cpu.X86.HasAES
 }

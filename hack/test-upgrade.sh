@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: Copyright The Lima Authors
+# SPDX-License-Identifier: Apache-2.0
+
 set -eu -o pipefail
 
 scriptdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +31,15 @@ function install_lima() {
 	fi
 }
 
+function install_lima_binary() {
+	ver="$1"
+	tar="tar"
+	if [ ! -w "${PREFIX}/bin" ] || [ ! -w "${PREFIX}/share" ]; then
+		tar="sudo ${tar}"
+	fi
+	curl -fsSL "https://github.com/lima-vm/lima/releases/download/${ver}/lima-${ver:1}-$(uname -s)-$(uname -m).tar.gz" | ${tar} Cxzvm "${PREFIX}"
+}
+
 function uninstall_lima() {
 	files="${PREFIX}/bin/lima ${PREFIX}/bin/limactl ${PREFIX}/share/lima ${PREFIX}/share/doc/lima"
 	if [ -w "${PREFIX}/bin" ] && [ -w "${PREFIX}/share" ]; then
@@ -38,17 +51,27 @@ function uninstall_lima() {
 	fi
 }
 
+function show_lima_log() {
+	tail -n 100 ~/.lima/"${LIMA_INSTANCE}"/*.log || true
+	mkdir -p failure-logs
+	cp -pf ~/.lima/"${LIMA_INSTANCE}"/*.log failure-logs/ || true
+	limactl shell "${LIMA_INSTANCE}" sudo cat /var/log/cloud-init-output.log | tee failure-logs/cloud-init-output.log || true
+}
+
 INFO "Uninstalling lima"
 uninstall_lima
 
 INFO "Installing the old Lima ${OLDVER}"
-install_lima "${OLDVER}"
+install_lima_binary "${OLDVER}" || install_lima "${OLDVER}"
 
 export LIMA_INSTANCE="test-upgrade"
 
 INFO "Creating an instance \"${LIMA_INSTANCE}\" with the old Lima"
-defer "limactl delete -f \"${LIMA_INSTANCE}\""
-limactl start --tty=false "${LIMA_INSTANCE}"
+defer "show_lima_log;limactl delete -f \"${LIMA_INSTANCE}\""
+limactl start --tty=false --name="${LIMA_INSTANCE}" template://ubuntu-lts || (
+	show_lima_log
+	exit 1
+)
 lima nerdctl info
 
 image_name="lima-test-upgrade-containerd-${RANDOM}"
@@ -73,7 +96,7 @@ INFO "Installing the new Lima ${NEWVER}"
 install_lima "${NEWVER}"
 
 INFO "Restarting the instance"
-limactl start --tty=false "${LIMA_INSTANCE}"
+limactl start --tty=false "${LIMA_INSTANCE}" || show_lima_log
 lima nerdctl info
 
 INFO "Confirming that the host filesystem is still mounted"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // This file has been adapted from https://github.com/norouter/norouter/blob/v0.6.4/pkg/agent/dns/dns.go
 
 package dns
@@ -6,15 +9,20 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
 
-// Truncate for avoiding "Parse error" from `busybox nslookup`
-// https://github.com/lima-vm/lima/issues/380
-const truncateSize = 512
+const (
+	// Truncate for avoiding "Parse error" from `busybox nslookup`
+	// https://github.com/lima-vm/lima/issues/380
+	truncateSize      = 512
+	ipv6ResponseDelay = time.Second
+)
 
 var defaultFallbackIPs = []string{"8.8.8.8", "1.1.1.1"}
 
@@ -63,7 +71,7 @@ func (s *Server) Shutdown() {
 }
 
 func newStaticClientConfig(ips []string) (*dns.ClientConfig, error) {
-	logrus.Debugf("newStaticClientConfig creating config for the the following IPs: %v", ips)
+	logrus.Tracef("newStaticClientConfig creating config for the following IPs: %v", ips)
 	s := ``
 	for _, ip := range ips {
 		s += fmt.Sprintf("nameserver %s\n", ip)
@@ -146,8 +154,9 @@ func (h *Handler) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 		reply   dns.Msg
 		handled bool
 	)
+	defer w.Close()
 	reply.SetReply(req)
-	logrus.Debugf("handleQuery received DNS query: %v", req)
+	logrus.Tracef("handleQuery received DNS query: %v", req)
 	for _, q := range req.Question {
 		hdr := dns.RR_Header{
 			Name:   q.Name,
@@ -159,15 +168,18 @@ func (h *Handler) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 		switch q.Qtype {
 		case dns.TypeAAAA:
 			if !h.ipv6 {
-				// A "correct" answer would be to set `handled = true` and return a NODATA response.
-				// Unfortunately some older resolvers use a slow random source to set the transaction id.
+				// Unfortunately some older resolvers use a slow random source to set the Transaction ID.
 				// This creates a problem on M1 computers, which are too fast for that implementation:
-				// Both the A and AAAA queries might end up with the same id. Returning NODATA for AAAA
-				// is faster, so would arrive first, and be treated as the response to the A query.
-				// To avoid this, we will treat an AAAA query as an A query when IPv6 has been disabled.
-				// This way it is either a valid response for an A query, or the A records will be discarded
-				// by a genuine AAAA query, resulting in the desired NODATA response.
-				qtype = dns.TypeA
+				// Both the A and AAAA queries might end up with the same id. Therefore, we wait for
+				// 1 second and then we return NODATA for AAAA. This will allow the client to receive
+				// the correct response even when both Transaction IDs are the same.
+				time.Sleep(ipv6ResponseDelay)
+				// See RFC 2308 section 2.2 which suggests that NODATA is indicated by setting the
+				// RCODE to NOERROR along with zero entries in the response.
+				reply.SetRcode(req, dns.RcodeSuccess)
+				reply.SetReply(req)
+				handled = true
+				break
 			}
 			fallthrough
 		case dns.TypeA:
@@ -307,17 +319,17 @@ func (h *Handler) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func (h *Handler) handleDefault(w dns.ResponseWriter, req *dns.Msg) {
-	logrus.Debugf("handleDefault for %v", req)
+	logrus.Tracef("handleDefault for %v", req)
 	for _, client := range h.clients {
 		for _, srv := range h.clientConfig.Servers {
-			addr := fmt.Sprintf("%s:%s", srv, h.clientConfig.Port)
+			addr := net.JoinHostPort(srv, h.clientConfig.Port)
 			reply, _, err := client.Exchange(req, addr)
 			if err != nil {
 				logrus.WithError(err).Debugf("handleDefault failed to perform a synchronous query with upstream [%v]", addr)
 				continue
 			}
 			if h.truncate {
-				logrus.Debugf("handleDefault truncating reply: %v", reply)
+				logrus.Tracef("handleDefault truncating reply: %v", reply)
 				reply.Truncate(truncateSize)
 			}
 			if err = w.WriteMsg(reply); err != nil {
@@ -329,7 +341,7 @@ func (h *Handler) handleDefault(w dns.ResponseWriter, req *dns.Msg) {
 	var reply dns.Msg
 	reply.SetReply(req)
 	if h.truncate {
-		logrus.Debugf("handleDefault truncating reply: %v", reply)
+		logrus.Tracef("handleDefault truncating reply: %v", reply)
 		reply.Truncate(truncateSize)
 	}
 	if err := w.WriteMsg(&reply); err != nil {
@@ -370,9 +382,9 @@ func listenAndServe(network Network, opts ServerOptions) (*dns.Server, error) {
 	// always enable reply truncate for UDP
 	if network == UDP {
 		opts.HandlerOptions.TruncateReply = true
-		addr = fmt.Sprintf("%s:%d", opts.Address, opts.UDPPort)
+		addr = net.JoinHostPort(opts.Address, strconv.Itoa(opts.UDPPort))
 	} else {
-		addr = fmt.Sprintf("%s:%d", opts.Address, opts.TCPPort)
+		addr = net.JoinHostPort(opts.Address, strconv.Itoa(opts.TCPPort))
 	}
 	h, err := NewHandler(opts.HandlerOptions)
 	if err != nil {
@@ -380,7 +392,7 @@ func listenAndServe(network Network, opts ServerOptions) (*dns.Server, error) {
 	}
 	s := &dns.Server{Net: string(network), Addr: addr, Handler: h}
 	go func() {
-		logrus.Debugf("Start %v server listening on: %v", network, addr)
+		logrus.Debugf("Start %v DNS listening on: %v", network, addr)
 		if e := s.ListenAndServe(); e != nil {
 			panic(e)
 		}
@@ -391,7 +403,7 @@ func listenAndServe(network Network, opts ServerOptions) (*dns.Server, error) {
 
 func chunkify(buffer string, limit int) []string {
 	var result []string
-	for len(buffer) > 0 {
+	for buffer != "" {
 		if len(buffer) < limit {
 			limit = len(buffer)
 		}
