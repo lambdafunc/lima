@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package dirnames
 
 import (
@@ -12,7 +15,7 @@ import (
 // DotLima is a directory that appears under the home directory.
 const DotLima = ".lima"
 
-// LimaDir returns the abstract path of `~/.lima` (or $LIMA_HOME, if set).
+// LimaDir returns the absolute path of `~/.lima` (or $LIMA_HOME, if set).
 //
 // NOTE: We do not use `~/Library/Application Support/Lima` on macOS.
 // We use `~/.lima` so that we can have enough space for the length of the socket path,

@@ -1,5 +1,7 @@
 //go:build !darwin || no_vz
-// +build !darwin no_vz
+
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package vz
 
@@ -11,6 +13,8 @@ import (
 )
 
 var ErrUnsupported = errors.New("vm driver 'vz' needs macOS 13 or later (Hint: try recompiling Lima if you are seeing this error on macOS 13)")
+
+const Enabled = false
 
 type LimaVzDriver struct {
 	*driver.BaseDriver
@@ -26,11 +30,11 @@ func (l *LimaVzDriver) Validate() error {
 	return ErrUnsupported
 }
 
-func (l *LimaVzDriver) CreateDisk() error {
+func (l *LimaVzDriver) CreateDisk(_ context.Context) error {
 	return ErrUnsupported
 }
 
-func (l *LimaVzDriver) Start(ctx context.Context) (chan error, error) {
+func (l *LimaVzDriver) Start(_ context.Context) (chan error, error) {
 	return nil, ErrUnsupported
 }
 

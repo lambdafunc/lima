@@ -13,45 +13,64 @@ on:
     - 'master'
 env:
   GO111MODULE: on
+permissions:
+  contents: read
+
 jobs:
   artifacts-darwin:
     name: Artifacts Darwin
-    runs-on: macos-12
+    # The latest release of macOS is used to enable new features.
+    # https://github.com/lima-vm/lima/issues/2767
+    #
+    # Apparently, a binary built on a newer version of macOS can still run on
+    # an older release of macOS without an error.
+    # This is quite different from Linux and glibc.
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
-    - name: "Switch Xcode version to enable macOS 13 SDK"
-      # Xcode 14.1 added support for macOS 13 SDK.
-      # The default version is still 14.0.1, as of November 2022.
-      # https://github.com/actions/runner-images/blob/main/images/macos/macos-12-Readme.md#xcode
+    - name: "Show xcode and SDK version"
       run: |
-        sudo xcode-select --switch /Applications/Xcode_14.1.app
-        xcrun --show-sdk-version
-    - uses: actions/setup-go@v3
-      with:
-        go-version: 1.19.x
-    - uses: actions/checkout@v3
+        # Xcode version
+        xcodebuild -version
+        # macOS SDK version
+        xcrun --show-sdk-version || true
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       with:
         fetch-depth: 1
+    - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34  # v5.3.0
+      with:
+        go-version: 1.24.x
     - name: Make darwin artifacts
       run: make artifacts-darwin
     - name: "Upload artifacts"
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1  # v4.6.1
       with:
         name: artifacts-darwin
         path: _artifacts/
   release:
+    # An old release of Ubuntu is chosen for glibc compatibility
     runs-on: ubuntu-22.04
     needs: artifacts-darwin
     timeout-minutes: 20
+    # The maximum access is "read" for PRs from public forked repos
+    # https://docs.github.com/en/actions/security-guides/automatic-token-authentication#permissions-for-the-github_token
+    permissions:
+      contents: write  # for releases
+      id-token: write  # for provenances
+      attestations: write  # for provenances
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/download-artifact@v3
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+    - uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806  # v4.1.9
       with:
         name: artifacts-darwin
         path: _artifacts/
-    - uses: actions/setup-go@v3
+    - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34  # v5.3.0
       with:
-        go-version: 1.19.x
+        go-version: 1.24.x
+    - name: Install gcc-x86-64-linux-gnu
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-x86-64-linux-gnu
     - name: Install gcc-aarch64-linux-gnu
       run: |
         sudo apt-get update
@@ -68,15 +87,13 @@ jobs:
       run: (cd _artifacts; sha256sum SHA256SUMS)
     - name: "Prepare the release note"
       run: |
-        tag="${GITHUB_REF##*/}"
         shasha=$(sha256sum _artifacts/SHA256SUMS | awk '{print $1}')
         cat <<-EOF | tee /tmp/release-note.txt
-        ${tag}
-
         (Changes to be documented)
 
         ## Usage
         \`\`\`console
+        [macOS]$ limactl create
         [macOS]$ limactl start
         ...
         INFO[0029] READY. Run \`lima\` to open the shell.
@@ -90,13 +107,17 @@ jobs:
         The build log is available for 90 days: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
         The sha256sum of the SHA256SUMS file itself is \`${shasha}\` .
+        - - -
+        Release manager: [ADD YOUR NAME HERE] (@[ADD YOUR GITHUB ID HERE])
         EOF
+    - uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2  # v2.2.3
+      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      with:
+        subject-path: _artifacts/*
     - name: "Create release"
       if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         tag="${GITHUB_REF##*/}"
-        asset_flags=()
-        for f in _artifacts/*; do asset_flags+=("-a" "$f"); done
-        hub release create "${asset_flags[@]}" -F /tmp/release-note.txt --draft "${tag}"
+        gh release create -F /tmp/release-note.txt --draft --title "${tag}" "${tag}" _artifacts/*

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package osutil
 
 import (
@@ -14,27 +17,18 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	machineIDCached string
-	machineIDOnce   sync.Once
-)
-
-func MachineID() string {
-	machineIDOnce.Do(func() {
-		x, err := machineID()
-		if err == nil && x != "" {
-			machineIDCached = x
-			return
-		}
-		logrus.WithError(err).Debug("failed to get machine ID, falling back to use hostname instead")
-		hostname, err := os.Hostname()
-		if err != nil {
-			panic(err)
-		}
-		machineIDCached = hostname
-	})
-	return machineIDCached
-}
+var MachineID = sync.OnceValue(func() string {
+	x, err := machineID()
+	if err == nil && x != "" {
+		return x
+	}
+	logrus.WithError(err).Debug("failed to get machine ID, falling back to use hostname instead")
+	hostname, err := os.Hostname()
+	if err != nil {
+		panic(fmt.Errorf("failed to get hostname: %w", err))
+	}
+	return hostname
+})
 
 func machineID() (string, error) {
 	if runtime.GOOS == "darwin" {

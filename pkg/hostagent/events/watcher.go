@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package events
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/lima-vm/lima/pkg/logrusutil"
@@ -21,7 +25,7 @@ func Watch(ctx context.Context, haStdoutPath, haStderrPath string, begin time.Ti
 	}
 	defer func() {
 		_ = haStdoutTail.Stop()
-		haStdoutTail.Cleanup()
+		// Do NOT call haStdoutTail.Cleanup(), it prevents the process from ever tailing the file again
 	}()
 
 	haStderrTail, err := tail.TailFile(haStderrPath,
@@ -34,7 +38,7 @@ func Watch(ctx context.Context, haStdoutPath, haStderrPath string, begin time.Ti
 	}
 	defer func() {
 		_ = haStderrTail.Stop()
-		haStderrTail.Cleanup()
+		// Do NOT call haStderrTail.Cleanup(), it prevents the process from ever tailing the file again
 	}()
 
 loop:
@@ -43,6 +47,9 @@ loop:
 		case <-ctx.Done():
 			break loop
 		case line := <-haStdoutTail.Lines:
+			if line == nil {
+				break loop
+			}
 			if line.Err != nil {
 				logrus.Error(line.Err)
 			}
@@ -51,7 +58,7 @@ loop:
 			}
 			var ev Event
 			if err := json.Unmarshal([]byte(line.Text), &ev); err != nil {
-				return err
+				return fmt.Errorf("failed to unmarshal %q as %T: %w", line.Text, ev, err)
 			}
 			logrus.WithField("event", ev).Debugf("received an event")
 			if stop := onEvent(ev); stop {

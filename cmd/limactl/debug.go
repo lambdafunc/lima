@@ -1,7 +1,11 @@
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/lima-vm/lima/pkg/hostagent/dns"
 	"github.com/sirupsen/logrus"
@@ -20,11 +24,11 @@ func newDebugCommand() *cobra.Command {
 }
 
 func newDebugDNSCommand() *cobra.Command {
-	var cmd = &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "dns UDPPORT [TCPPORT]",
 		Short: "Debug built-in DNS",
 		Long:  "DO NOT USE! THE COMMAND SYNTAX IS SUBJECT TO CHANGE!",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  WrapArgsError(cobra.RangeArgs(1, 2)),
 		RunE:  debugDNSAction,
 	}
 	cmd.Flags().BoolP("ipv6", "6", false, "lookup IPv6 addresses too")
@@ -62,5 +66,6 @@ func debugDNSAction(cmd *cobra.Command, args []string) error {
 	}
 	logrus.Infof("Started srv %+v (UDP %d, TCP %d)", srv, udpLocalPort, tcpLocalPort)
 	for {
+		time.Sleep(time.Hour)
 	}
 }

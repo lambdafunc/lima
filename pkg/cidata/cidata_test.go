@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package cidata
 
 import (
@@ -8,12 +11,10 @@ import (
 
 	"github.com/lima-vm/lima/pkg/networks"
 
-	"github.com/lima-vm/lima/pkg/limayaml"
-	"github.com/xorcare/pointer"
 	"gotest.tools/v3/assert"
 )
 
-func fakeLookupIP(host string) []net.IP {
+func fakeLookupIP(_ string) []net.IP {
 	return []net.IP{net.IPv4(127, 0, 0, 0)}
 }
 
@@ -21,10 +22,7 @@ func TestSetupEnv(t *testing.T) {
 	netLookupIP = fakeLookupIP
 	urlMustParse := func(urlStr string) *url.URL {
 		u, err := url.Parse(urlStr)
-		if err != nil {
-			panic(err)
-		}
-
+		assert.NilError(t, err)
 		return u
 	}
 
@@ -48,7 +46,7 @@ func TestSetupEnv(t *testing.T) {
 		t.Run(httpProxy.Host, func(t *testing.T) {
 			envKey := "http_proxy"
 			envValue := httpProxy.String()
-			envs, err := setupEnv(&limayaml.LimaYAML{PropagateProxyEnv: pointer.Bool(false), Env: map[string]string{envKey: envValue}})
+			envs, err := setupEnv(map[string]string{envKey: envValue}, false, networks.SlirpGateway)
 			assert.NilError(t, err)
 			assert.Equal(t, envs[envKey], strings.ReplaceAll(envValue, httpProxy.Hostname(), networks.SlirpGateway))
 		})
@@ -58,7 +56,7 @@ func TestSetupEnv(t *testing.T) {
 func TestSetupInvalidEnv(t *testing.T) {
 	envKey := "http_proxy"
 	envValue := "://localhost:8080"
-	envs, err := setupEnv(&limayaml.LimaYAML{PropagateProxyEnv: pointer.Bool(false), Env: map[string]string{envKey: envValue}})
+	envs, err := setupEnv(map[string]string{envKey: envValue}, false, networks.SlirpGateway)
 	assert.NilError(t, err)
 	assert.Equal(t, envs[envKey], envValue)
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (
@@ -10,15 +13,16 @@ import (
 
 func newInfoCommand() *cobra.Command {
 	infoCommand := &cobra.Command{
-		Use:   "info",
-		Short: "Show diagnostic information",
-		Args:  cobra.NoArgs,
-		RunE:  infoAction,
+		Use:     "info",
+		Short:   "Show diagnostic information",
+		Args:    WrapArgsError(cobra.NoArgs),
+		RunE:    infoAction,
+		GroupID: advancedCommand,
 	}
 	return infoCommand
 }
 
-func infoAction(cmd *cobra.Command, args []string) error {
+func infoAction(cmd *cobra.Command, _ []string) error {
 	info, err := infoutil.GetInfo()
 	if err != nil {
 		return err

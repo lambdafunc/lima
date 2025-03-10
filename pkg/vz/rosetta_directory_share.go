@@ -1,5 +1,7 @@
 //go:build darwin && !arm64 && !no_vz
-// +build darwin,!arm64,!no_vz
+
+// SPDX-FileCopyrightText: Copyright The Lima Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package vz
 

@@ -1,4 +1,8 @@
 #!/bin/sh
+
+# SPDX-FileCopyrightText: Copyright The Lima Authors
+# SPDX-License-Identifier: Apache-2.0
+
 # Load modules as soon as the cloud-init starts up.
 # Because Arch Linux removes kernel module files when the kernel package was updated during running cloud-init :(
 
@@ -13,6 +17,6 @@ for f in \
 	overlay; do
 	echo "Loading kernel module \"$f\""
 	if ! modprobe "$f"; then
-		echo >&2 "Faild to load \"$f\" (negligible if it is built-in the kernel)"
+		echo >&2 "Failed to load \"$f\" (negligible if it is built-in the kernel)"
 	fi
 done
